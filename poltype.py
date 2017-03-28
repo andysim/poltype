@@ -1,4 +1,11 @@
-#!/usr/bin/python
+#!/usr/bin/env python
+try:
+    import psi4
+    print("Psi4 detected; it will be used as the QM engine")
+    use_psi4 = True
+except:
+    print("Psi4 not detected; attempting to use Gaussian instead")
+    use_psi4 = False
 
 ##################################################################
 #
@@ -102,7 +109,7 @@ Hartree2kcal_mol = 627.5095
 optbasisset = "6-31G*"
 dmabasisset = "6-311G**"
 popbasisset = "6-31G*"
-espbasisset = "6-311++G(2d,2p)"
+espbasisset = "6-311++G**"
 m06lbasisset = "6-311++G**"
 
 # Initialize some global variables such as arrays and booleans
@@ -386,33 +393,35 @@ def initialize ():
     global superposeexe
     global gdmaexe
 
-    if (gausdir is not None):
-        if which(os.path.join(gausdir,"g09")) is not None:
-            gausexe    = os.path.join(gausdir,"g09")
-            formchkexe = os.path.join(gausdir,formchkexe)
-            cubegenexe = os.path.join(gausdir,cubegenexe)
-        elif which(os.path.join(gausdir,"g03")) is not None:
-            gausexe    = os.path.join(gausdir,"g03")
-            formchkexe = os.path.join(gausdir,formchkexe)
-            cubegenexe = os.path.join(gausdir,cubegenexe)
+
+    if not use_psi4:
+        if (gausdir is not None):
+            if which(os.path.join(gausdir,"g09")) is not None:
+                gausexe    = os.path.join(gausdir,"g09")
+                formchkexe = os.path.join(gausdir,formchkexe)
+                cubegenexe = os.path.join(gausdir,cubegenexe)
+            elif which(os.path.join(gausdir,"g03")) is not None:
+                gausexe    = os.path.join(gausdir,"g03")
+                formchkexe = os.path.join(gausdir,formchkexe)
+                cubegenexe = os.path.join(gausdir,cubegenexe)
+            else:
+                print "ERROR: Invalid Gaussian directory: ", gausdir
+                sys.exit(1)
         else:
-            print "ERROR: Invalid Gaussian directory: ", gausdir
-            sys.exit(1)
-    else:
-        if which("g09") is not None:
-            gausexe    = "g09"
-        elif which("g03") is not None:
-            gausexe    = "g03"
-        else:
-            print "ERROR: Cannot find Gaussian executable in $PATH. Please install Gaussian or specify Gaussian directory with --gbindir flag."
-            sys.exit(1)
+            if which("g09") is not None:
+                gausexe    = "g09"
+            elif which("g03") is not None:
+                gausexe    = "g03"
+            else:
+                print "ERROR: Cannot find Gaussian executable in $PATH. Please install Gaussian or specify Gaussian directory with --gbindir flag."
+                sys.exit(1)
 
     if ("TINKERDIR" in os.environ):
         tinkerdir = os.environ["TINKERDIR"]
         promof = open(tinkerdir+"/promo.f")
         latestversion = False
         for line in promof:
-            if "6.2" in line:
+            if "6.3" in line:
                 latestversion = True
                 break
         promof.close()
@@ -430,25 +439,26 @@ def initialize ():
         print "ERROR: Cannot find TINKER analyze executable"
         sys.exit(2)
 
-    if ("GDMADIR" in os.environ):
-        gdmadir = os.environ["GDMADIR"]
-        gdmaexe = os.path.join(gdmadir,gdmaexe)
+    if not use_psi4:
+        if ("GDMADIR" in os.environ):
+            gdmadir = os.environ["GDMADIR"]
+            gdmaexe = os.path.join(gdmadir,gdmaexe)
 
-    if (not which(gdmaexe)):
-        print "ERROR: Cannot find GDMA executable"
-        sys.exit(2)
-
-    if ("GAUSS_SCRDIR" in os.environ):
-        scratchdir = os.environ["GAUSS_SCRDIR"]
-        vfs = os.statvfs(scratchdir)
-        gbfree = (vfs.f_bavail * vfs.f_frsize) / (1024*1024*1024)
-        if(float(maxdisk[:-2]) > gbfree):
-            print "ERROR: maxdisk greater than free space in scratch directory"
+        if (not which(gdmaexe)):
+            print "ERROR: Cannot find GDMA executable"
             sys.exit(2)
 
-    if (not which(scratchdir)):
-        print "ERROR: Cannot find Gaussian scratch directory"
-        sys.exit(2)
+        if ("GAUSS_SCRDIR" in os.environ):
+            scratchdir = os.environ["GAUSS_SCRDIR"]
+            vfs = os.statvfs(scratchdir)
+            gbfree = (vfs.f_bavail * vfs.f_frsize) / (1024*1024*1024)
+            if(float(maxdisk[:-2]) > gbfree):
+                print "ERROR: maxdisk greater than free space in scratch directory"
+                sys.exit(2)
+
+        if (not which(scratchdir)):
+            print "ERROR: Cannot find Gaussian scratch directory"
+            sys.exit(2)
 
     #os.putenv('BABEL_DATADIR',obdatadir)
 
@@ -1197,6 +1207,88 @@ def gen_torcomfile (comfname,numproc,maxmem,prevstruct,xyzf):
             tmpfh.write('%2s %11.6f %11.6f %11.6f\n' % (etab.GetSymbol(atm.GetAtomicNum()), atm.x(),atm.y(),atm.z()))
         tmpfh.write('\n')
         tmpfh.close()
+
+
+def run_psi4(mol):
+    """
+    Intent: QM calculations are done within this method.
+        The calculations should probably be skipped if log files exist,
+        but this is not currently implemented.
+    Input: 
+        mol: OBMol object with pre optimized geometry
+    Output: 
+        optmol: OBMol object with post Psi4 optimized geometry
+    Referenced By: main
+    Description: 
+    1. Babel is used to convert the input file ('molstructfname') to a tmp
+       .com file ('comtmp')
+    2. Molecule is optimized using Psi4
+        a. 'molstructfname' is loaded in through the 'load_structfile' method to create
+           an OBMol object; this object is stored as 'mystruct'
+        b. Gaussian is run
+        c. formchk utility is used to convert the *-opt.chk file to a formatted *-opt.fchk file
+        d. the information from the optimization logfile is loaded in to create the OBMol object
+           'optmol'
+        e. bond information that was in the 'mol' object is given to the 'optmol' object 
+           through the method 'rebuild_bonds'
+    """
+    global molecprefix
+    global numproc
+    global maxmem
+    global optbasisset
+    global dmabasisset
+    global logoptfname
+    global logpopfname
+    global logdmafname
+    global logespfname
+
+    logfh.write("NEED QM Density Matrix: Executing Psi4 Opt and SP\n")
+    comtmp = assign_filenames ( "comtmp" , "-tmp.com")
+    logoptfname = assign_filenames ( "logoptfname" , "-opt.log")
+    logpopfname = assign_filenames ( "logpopfname" , "-pop.log")
+    logdmafname = assign_filenames ( "logdmafname" , "-dma.log")
+    logespfname = assign_filenames ( "logespfname" , "-esp.log")
+
+    title = "\"" + molecprefix + " Gaussian Optimization on " + gethostname() + "\""
+    cmdstr = babelexe + " --title " + title + " "+ molstructfname+ " " + comtmp
+    call_subsystem(cmdstr)
+
+    assert os.path.getsize(comtmp) > 0, "Error: " + \
+       os.path.basename(babelexe) + " cannot create .com file."
+
+    psi4_geom = "".join(open(comtmp).readlines()[3:]) # Extract a psi4 geometry string from the COM file
+
+    psi4.core.set_output_file(logoptfname, False)
+    psi4.set_num_threads(numproc)
+    psi4.set_memory(maxmem)
+
+    #
+    # Geometry optimization
+    #
+    geom = psi4.geometry(psi4_geom)
+    psi4.set_options({
+        'g_convergence' : 'qchem',
+        'h_guess_every' : True,
+        'freeze_core'   : 'True'
+    })
+    energy, mp2wfn = psi4.optimize("MP2/%s"%optbasisset, molecule=geom, return_wfn=True)
+    geom.save_xyz_file('optimized.xyz', True)
+    optmol = load_structfile('optimized.xyz')
+    rebuild_bonds(optmol,mol)
+
+    #
+    # DMA run
+    #
+    psi4.core.set_output_file(logdmafname, False)
+    psi4.set_options({
+        'gdma_switch'   :  0,
+        'gdma_radius'   :  ['H', 0.65],
+    })
+    grad, wfn = psi4.gradient("MP2/%s"%dmabasisset, return_wfn=True, molecule=geom)
+    psi4.gdma(wfn)
+
+    return optmol
+
 
 def run_gaussian(mol):
     """
@@ -2362,7 +2454,28 @@ def gen_esp_grid():
         call_subsystem(gengridcmd)
     #    shutil.move(xyzoutfile,espgrdfname)
     # Run CUBEGEN
-    if not os.path.isfile(qmespfname):
+    if use_psi4:
+        shutil.copy(espgrdfname, 'grid.dat')
+        psi4.core.set_output_file(logespfname, False)
+        geom = psi4.geometry("".join(open('optimized.xyz').readlines()[2:]))
+        psi4.set_options({ "basis" : espbasisset })
+        grad, wfn = psi4.gradient("MP2", return_wfn=True, molecule=geom)
+        oeprops = psi4.core.OEProp(wfn)
+        oeprops.add('GRID_ESP')
+        oeprops.compute()
+        Vvals = oeprops.Vvals()
+        with open('grid.dat', 'r') as fp:
+            gridpts = fp.readlines()
+        if len(gridpts) != len(Vvals):
+            raise Exception('Dimension error in potential calculation!')
+        # Generate a "cube" file.  I have no idea what the format should be (it's not a
+        # regular cube file) so I reverse engineered one by looking at TINKER source.
+        with open(qmespfname, 'w') as fp:
+            fp.write(" MP2/%s potential calculation\n\n" % espbasisset)
+            fp.write("%5d\n%5d\n\n\n" % (0,len(Vvals)))
+            for xyz,v in zip(gridpts, Vvals):
+                fp.write("%s %s\n" % (xyz.rstrip(), v))
+    elif not os.path.isfile(qmespfname):
         fckfname = fckespfname
         if not espfit:
             fckfname = fckdmafname
@@ -2374,6 +2487,7 @@ def gen_esp_grid():
         gencubecmd = cubegenexe + " 0 potential=MP2 " + fckfname + " " + \
                      qmespfname + " -5 h < " + espgrdfname
         call_subsystem(gencubecmd,iscritical=True)
+
     # Run potential
     if not os.path.isfile(qmesp2fname):
         genqmpotcmd = potentialexe + " 2 " + qmespfname
@@ -3411,7 +3525,10 @@ def main():
     # This is used by GDMA to find multipoles
     # Then information for generating the electrostatic potential grid is found (-esp)
     # This information is used by cubegen
-    optmol = run_gaussian(mol)
+    if use_psi4:
+        optmol = run_psi4(mol)
+    else:
+        optmol = run_gaussian(mol)
 
     # End here if qm calculations were all that needed to be done 
     if qmonly:
@@ -3448,13 +3565,16 @@ def main():
     torlist = get_torlist_opt_angle(optmol, torlist)
 
     # Obtain multipoles from Gaussian fchk file using GDMA
-    if not os.path.isfile(gdmafname):
-        run_gdma()
+    if use_psi4:
+        # Just copy it over; psi4 already called GDMA
+        shutil.copy(logdmafname,gdmafname)
+    else:
+        if not os.path.isfile(gdmafname):
+            run_gdma()
 
     # Set up input file for poledit
     # find multipole local frame definitions 
     lfzerox = gen_peditinfile(mol)
-    
     
     if (not os.path.isfile(xyzfname) or not os.path.isfile(keyfname)):
         # Run poledit
